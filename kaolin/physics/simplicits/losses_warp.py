@@ -18,10 +18,13 @@ from functools import partial
 import warp as wp
 
 
-import kaolin.physics.materials.utils as material_utils
+import kaolin.physics.materials.material_utils as material_utils
 import kaolin.physics.materials.linear_elastic_material as linear_elastic_material
 import kaolin.physics.materials.neohookean_elastic_material as neohookean_elastic_material
 from kaolin.physics.simplicits.losses import loss_ortho
+
+wp.config.quiet = True
+wp.init()
 
 # Type defs
 mat34f = wp.types.matrix(shape=(3, 4), dtype=wp.float32)
@@ -34,15 +37,17 @@ __all__ = [
 
 
 @wp.func
-def _elastic_energy(F: wp.mat33f, mu: float, lam: float, interp_val: float) -> float:
+def _elastic_energy_wp_func(F: wp.mat33f, mu: float, lam: float, interp_val: float) -> float:  # pragma: no cover
     r""" Linearly blended elastic energy term of (linear elastic, neo-hookean) """
-    En = interp_val * neohookean_elastic_material.wp_neohookean_energy(mu, lam, F)
-    El = (1.0 - interp_val) * linear_elastic_material.wp_linear_elastic_energy(mu, lam, F)
+    En = interp_val * \
+        neohookean_elastic_material._neohookean_elastic_energy_wp_func(mu, lam, F, 1.0)
+    El = (1.0 - interp_val) * \
+        linear_elastic_material._linear_elastic_energy_wp_func(mu, lam, F)
     return En + El
 
 
 @wp.func
-def _map_x(
+def _map_x_wp_func(
     x0: wp.vec3,
     Ts: wp.array(dtype=mat34, ndim=2),    # shape (B, H)
     w: wp.array(dtype=float, ndim=3),     # shape (N, 6, H)
@@ -50,7 +55,7 @@ def _map_x(
     transform_idx: int,
     fd_idx: int,
     H: int
-) -> wp.vec3:
+) -> wp.vec3:  # pragma: no cover
     r"""Get deformed points
 
     """
@@ -72,16 +77,22 @@ def _finite_difference_defo_grad(
     transform_idx: int,
     H: int,
     eps: float
-) -> wp.mat33:
+) -> wp.mat33:  # pragma: no cover
     """Finite difference deformation gradient
     """
     delta = wp.sqrt(eps)
-    x0_plus_dx = _map_x(x0 + wp.vec3(delta, 0.0, 0.0), Ts, w, pt_idx, transform_idx, 0, H)
-    x0_minus_dx = _map_x(x0 - wp.vec3(delta, 0.0, 0.0), Ts, w, pt_idx, transform_idx, 3, H)
-    x0_plus_dy = _map_x(x0 + wp.vec3(0.0, delta, 0.0), Ts, w, pt_idx, transform_idx, 1, H)
-    x0_minus_dy = _map_x(x0 - wp.vec3(0.0, delta, 0.0), Ts, w, pt_idx, transform_idx, 4, H)
-    x0_plus_dz = _map_x(x0 + wp.vec3(0.0, 0.0, delta), Ts, w, pt_idx, transform_idx, 2, H)
-    x0_minus_dz = _map_x(x0 - wp.vec3(0.0, 0.0, delta), Ts, w, pt_idx, transform_idx, 5, H)
+    x0_plus_dx = _map_x_wp_func(x0 + wp.vec3(delta, 0.0, 0.0), Ts,
+                        w, pt_idx, transform_idx, 0, H)
+    x0_minus_dx = _map_x_wp_func(x0 - wp.vec3(delta, 0.0, 0.0),
+                         Ts, w, pt_idx, transform_idx, 3, H)
+    x0_plus_dy = _map_x_wp_func(x0 + wp.vec3(0.0, delta, 0.0), Ts,
+                        w, pt_idx, transform_idx, 1, H)
+    x0_minus_dy = _map_x_wp_func(x0 - wp.vec3(0.0, delta, 0.0),
+                         Ts, w, pt_idx, transform_idx, 4, H)
+    x0_plus_dz = _map_x_wp_func(x0 + wp.vec3(0.0, 0.0, delta), Ts,
+                        w, pt_idx, transform_idx, 2, H)
+    x0_minus_dz = _map_x_wp_func(x0 - wp.vec3(0.0, 0.0, delta),
+                         Ts, w, pt_idx, transform_idx, 5, H)
 
     x0_dx = x0_plus_dx - x0_minus_dx
     x0_dy = x0_plus_dy - x0_minus_dy
@@ -108,7 +119,7 @@ def _warp_elastic_loss(
     interp_val: float,
     eps: float,
     out_E: wp.array(dtype=float)  # shape (B,)
-):
+):  # pragma: no cover
     r"""Accumulate elastic losses into out_E
     """
     pt_idx, transform_idx = wp.tid()
@@ -116,8 +127,9 @@ def _warp_elastic_loss(
     mu_ = mus[pt_idx, transform_idx]            # float
     lam_ = lams[pt_idx, transform_idx]          # float
 
-    F = _finite_difference_defo_grad(x0_, Ts, w, pt_idx, transform_idx, H, eps)    # wp.mat33
-    E = _elastic_energy(F, mu_, lam_, interp_val)  # float
+    F = _finite_difference_defo_grad(
+        x0_, Ts, w, pt_idx, transform_idx, H, eps)    # wp.mat33
+    E = _elastic_energy_wp_func(F, mu_, lam_, interp_val)  # float
     wp.atomic_add(out_E, transform_idx, E)
 
 
@@ -179,7 +191,8 @@ class _EnergyPotential(torch.autograd.Function):
                 ctx.eps  # eps: float
             ],
             outputs=[ctx.out_e],  # out_e: wp.array(dtype=float)  ; shape (B,)
-            adj_inputs=[None, None, None, None, ctx.fd_ws.grad, ctx.H, ctx.interp_val, ctx.eps],
+            adj_inputs=[None, None, None, None, ctx.fd_ws.grad,
+                        ctx.H, ctx.interp_val, ctx.eps],
             adj_outputs=[ctx.out_e.grad],
             adjoint=True
         )
@@ -188,7 +201,7 @@ class _EnergyPotential(torch.autograd.Function):
         return (None, None, None, None, wp.to_torch(ctx.fd_ws.grad), None, None)
 
 
-def _prepare_finite_diff_w_bounds(x, model):
+def _prepare_finite_diff_w_bounds(x, model):  # pragma: no cover
     r"""Returns batched values for :math:`(model(x+eps), model(x-eps))` to be use in central finite difference jacobian for deformation gradient
 
     Args:
@@ -196,7 +209,7 @@ def _prepare_finite_diff_w_bounds(x, model):
         model (nn.Module): Network as a function
 
     Returns:
-        torch.Tensor: Jacobian of size :math:`(\text{num_samples, 2*dim, num_handles})` 
+        torch.Tensor: Jacobian of size :math:`(\text{num_samples, 2dim, num_handles})` 
     """
     # Controls numerical accuracy of finite-difference
     eps = 1e-7
@@ -209,7 +222,8 @@ def _prepare_finite_diff_w_bounds(x, model):
     finite_diff_bounds[:, 4, 1] -= delta
     finite_diff_bounds[:, 5, 2] -= delta
 
-    batch_dims, coord_dims = finite_diff_bounds.shape[:-1], finite_diff_bounds.shape[-1]
+    batch_dims, coord_dims = finite_diff_bounds.shape[:-
+                                                      1], finite_diff_bounds.shape[-1]
     finite_diff_bounds = finite_diff_bounds.reshape(-1, coord_dims)
     fd_ws = model(finite_diff_bounds)
     fd_ws = fd_ws.reshape(*batch_dims, -1)
@@ -221,7 +235,7 @@ def loss_elastic_warp(model, pts, yms, prs, rhos, transforms, appx_vol, interp_s
 
     Args:
         model (nn.Module): Simplicits object network
-        pts (torch.Tensor): Tensor of sample points in R^dim, for now dim=3, of shape :math:`(\text{num_samples}, \text{dim})`
+        pts (torch.Tensor): Tensor of sample points in :math:`\mathbb{R}^dim`, for now dim=3, of shape :math:`(\text{num_samples}, \text{dim})`
         yms (torch.Tensor): Length pt-wise youngs modulus, of shape :math:`(\text{num_samples})`
         prs (torch.Tensor): Length pt-wise poisson ratios, of shape :math:`(\text{num_samples})`
         rhos (torch.Tensor): Length pt-wise density, of shape :math:`(\text{num_samples})`
@@ -258,7 +272,7 @@ def compute_losses_warp(model, normalized_pts, yms, prs, rhos, en_interp, batch_
 
     Args:
         model (nn.module): Simplicits network
-        normalized_pts (torch.Tensor): Spatial points in :math:`R^3`, of shape :math:`(\text{num_pts}, 3)`
+        normalized_pts (torch.Tensor): Spatial points in :math:`\mathbb{R}^3`, of shape :math:`(\text{num_pts}, 3)`
         yms (torch.Tensor): Point-wise youngs modulus, of shape :math:`(\text{num_pts})` 
         prs (torch.Tensor): Point-wise poissons ratio, of shape :math:`(\text{num_pts})`
         rhos (torch.Tensor): Point-wise density, of shape :math:`(\text{num_pts})`

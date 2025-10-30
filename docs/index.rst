@@ -14,6 +14,8 @@ See :ref:`Installation <installation>`, :ref:`API Overview <overview>` and :ref:
    :caption: Tutorials:
 
    notes/tutorial_index
+   notes/siggraph2025
+   notes/cvpr2025
    notes/simplicits
    notes/conversions
    notes/volumetric_meshes
